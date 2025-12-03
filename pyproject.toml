@@ -1,0 +1,46 @@
+[tool.poetry]
+name = "cortex-slack-bot"
+version = "0.1.0"
+description = "Slack bot powered by Snowflake Cortex AI Agents for natural language SQL queries"
+authors = ["Your Name <your.email@example.com>"]
+readme = "README.md"
+packages = [{include = "cortex_slack_bot", from = "src"}]
+
+[tool.poetry.dependencies]
+python = "^3.10"
+slack-bolt = "^1.27.0"
+httpx = "^0.28.0"
+pydantic = "^2.10.0"
+pydantic-settings = "^2.6.0"
+python-dotenv = "^1.0.0"
+snowflake-connector-python = "^3.12.0"
+
+[tool.poetry.group.dev.dependencies]
+pytest = "^8.3.0"
+pytest-asyncio = "^0.24.0"
+pytest-cov = "^6.0.0"
+ruff = "^0.8.0"
+mypy = "^1.13.0"
+
+[tool.poetry.scripts]
+cortex-bot = "cortex_slack_bot.app:main"
+
+[build-system]
+requires = ["poetry-core"]
+build-backend = "poetry.core.masonry.api"
+
+[tool.ruff]
+target-version = "py310"
+line-length = 100
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "N", "W", "UP"]
+
+[tool.mypy]
+python_version = "3.10"
+strict = true
+ignore_missing_imports = true
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+asyncio_mode = "auto"
