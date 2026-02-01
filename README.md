@@ -152,31 +152,6 @@ Show me the top 10 customers by revenue
 <!-- Add your example output screenshot here -->
 <!-- ![Example Output](docs/images/example-output.png) -->
 
-## Development
-
-### Running Tests
-
-```bash
-poetry run pytest
-```
-
-With coverage:
-
-```bash
-poetry run pytest --cov=cortex_slack_bot --cov-report=html
-```
-
-### Code Quality
-
-```bash
-# Linting
-poetry run ruff check .
-
-# Type checking
-poetry run mypy src
-```
-
-
 ## How It Works
 
 1. **User sends a question** in Slack (mention or DM)

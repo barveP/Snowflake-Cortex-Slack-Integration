@@ -93,6 +93,24 @@ def extract_question(text: str, bot_user_id: str) -> str:
     return re.sub(pattern, "", text).strip()
 
 
+async def run_cortex_query(cortex_client: CortexClient, question: str, thread_id: str | None) -> QueryResult:
+    try:
+        return await cortex_client.query(question, thread_id=thread_id)
+    except Exception as e:
+        logger.exception("Error running Cortex query")
+        return QueryResult(answer="", error=str(e))
+
+
+def run_query_sync(cortex_client: CortexClient, question: str, thread_id: str | None) -> QueryResult:
+    try:
+        result = asyncio.get_event_loop().run_until_complete(
+            run_cortex_query(cortex_client, question, thread_id)
+        )
+    except RuntimeError:
+        result = asyncio.run(run_cortex_query(cortex_client, question, thread_id))
+    return result
+
+
 def register_handlers(app: App, cortex_client: CortexClient) -> None:
 
     @app.event("app_mention")
@@ -109,13 +127,7 @@ def register_handlers(app: App, cortex_client: CortexClient) -> None:
 
         say(text=":hourglass_flowing_sand: Analyzing your question...", thread_ts=thread_ts)
 
-        try:
-            result = asyncio.get_event_loop().run_until_complete(
-                cortex_client.query(question, thread_id=thread_ts)
-            )
-        except RuntimeError:
-            result = asyncio.run(cortex_client.query(question, thread_id=thread_ts))
-
+        result = run_query_sync(cortex_client, question, thread_ts)
         blocks = format_response(result)
         fallback_text = result.answer if result.success else f"Error: {result.error}"
 
@@ -139,13 +151,7 @@ def register_handlers(app: App, cortex_client: CortexClient) -> None:
 
         say(text=":hourglass_flowing_sand: Analyzing your question...", thread_ts=thread_ts)
 
-        try:
-            result = asyncio.get_event_loop().run_until_complete(
-                cortex_client.query(text, thread_id=thread_ts)
-            )
-        except RuntimeError:
-            result = asyncio.run(cortex_client.query(text, thread_id=thread_ts))
-
+        result = run_query_sync(cortex_client, text, thread_ts)
         blocks = format_response(result)
         fallback_text = result.answer if result.success else f"Error: {result.error}"
 
