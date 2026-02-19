@@ -49,17 +49,7 @@ class CortexClient:
         return self._connection
 
     def _get_session_token(self) -> str:
-        if self._session_token is None:
-            conn = self._get_connection()
-            cursor = conn.cursor()
-            cursor.execute("SELECT SYSTEM$GENERATE_JWT_TOKEN()")
-            result = cursor.fetchone()
-            if result:
-                self._session_token = result[0]
-            else:
-                raise RuntimeError("Failed to generate session token")
-            cursor.close()
-        return self._session_token
+        return self.snowflake_settings.pat
 
     def _build_agent_url(self) -> str:
         base_url = self.snowflake_settings.base_url
@@ -73,14 +63,13 @@ class CortexClient:
             thread_id = str(uuid4())
 
         request_body = {
-            "thread_id": thread_id,
-            "parent_message_id": "0",
             "messages": [
                 {
                     "role": "user",
                     "content": [{"type": "text", "text": question}],
                 }
             ],
+            "stream": False,
         }
 
         try:
@@ -98,7 +87,9 @@ class CortexClient:
                     json=request_body,
                 )
                 response.raise_for_status()
-                return self._parse_response(response.json())
+                data = response.json()
+                logger.info("Cortex response: %s", data)
+                return self._parse_response(data)
 
         except httpx.HTTPStatusError as e:
             logger.error("HTTP error from Cortex Agent: %s", e)
@@ -112,29 +103,28 @@ class CortexClient:
 
     def _parse_response(self, response: dict[str, Any]) -> QueryResult:
         try:
-            messages = response.get("messages", [])
+            content = response.get("content", [])
             answer_parts: list[str] = []
             sql_query: str | None = None
             data: list[dict[str, Any]] = []
 
-            for message in messages:
-                if message.get("role") != "assistant":
-                    continue
+            for item in content:
+                item_type = item.get("type", "")
 
-                content = message.get("content", [])
-                for item in content:
-                    item_type = item.get("type", "")
+                if item_type == "text":
+                    answer_parts.append(item.get("text", ""))
 
-                    if item_type == "text":
-                        answer_parts.append(item.get("text", ""))
-
-                    elif item_type == "tool_results":
-                        tool_results = item.get("tool_results", [])
-                        for result in tool_results:
-                            if result.get("tool_name") == "analyst":
-                                result_content = result.get("content", {})
-                                sql_query = result_content.get("sql")
-                                data = result_content.get("data", [])
+                elif item_type == "tool_result":
+                    tool_result = item.get("tool_result", {})
+                    for result_item in tool_result.get("content", []):
+                        result_json = result_item.get("json", {})
+                        if "sql" in result_json:
+                            sql_query = result_json["sql"]
+                        result_set = result_json.get("result_set", {})
+                        if result_set.get("data"):
+                            meta = result_set.get("resultSetMetaData", {})
+                            columns = [col["name"] for col in meta.get("rowType", [])]
+                            data = [dict(zip(columns, row)) for row in result_set["data"]]
 
             return QueryResult(
                 answer="\n".join(answer_parts).strip(),

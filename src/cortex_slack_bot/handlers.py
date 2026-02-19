@@ -129,7 +129,7 @@ def register_handlers(app: App, cortex_client: CortexClient) -> None:
 
         result = run_query_sync(cortex_client, question, thread_ts)
         blocks = format_response(result)
-        fallback_text = result.answer if result.success else f"Error: {result.error}"
+        fallback_text = (result.answer or "No response from agent.") if result.success else f"Error: {result.error}"
 
         say(text=fallback_text, blocks=blocks, thread_ts=thread_ts)
         logger.info("Processed query from user %s: %s", user, question[:50])
@@ -153,7 +153,7 @@ def register_handlers(app: App, cortex_client: CortexClient) -> None:
 
         result = run_query_sync(cortex_client, text, thread_ts)
         blocks = format_response(result)
-        fallback_text = result.answer if result.success else f"Error: {result.error}"
+        fallback_text = (result.answer or "No response from agent.") if result.success else f"Error: {result.error}"
 
         say(text=fallback_text, blocks=blocks, thread_ts=thread_ts)
 
