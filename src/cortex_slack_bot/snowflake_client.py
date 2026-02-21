@@ -58,17 +58,26 @@ class CortexClient:
         agent_name = self.cortex_settings.agent_name
         return f"{base_url}/api/v2/databases/{database}/schemas/{schema}/agents/{agent_name}:run"
 
-    async def query(self, question: str, thread_id: str | None = None) -> QueryResult:
+    async def query(
+        self,
+        question: str,
+        thread_id: str | None = None,
+        history: list[dict[str, Any]] | None = None,
+    ) -> QueryResult:
         if thread_id is None:
             thread_id = str(uuid4())
 
+        if history:
+            messages = history + [
+                {"role": "user", "content": [{"type": "text", "text": question}]}
+            ]
+        else:
+            messages = [
+                {"role": "user", "content": [{"type": "text", "text": question}]}
+            ]
+
         request_body = {
-            "messages": [
-                {
-                    "role": "user",
-                    "content": [{"type": "text", "text": question}],
-                }
-            ],
+            "messages": messages,
             "stream": False,
         }
 

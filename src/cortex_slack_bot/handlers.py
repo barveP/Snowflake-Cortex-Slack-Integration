@@ -1,6 +1,7 @@
 import asyncio
 import logging
 import re
+from collections import defaultdict
 from typing import Any
 
 from slack_bolt import App
@@ -12,6 +13,9 @@ logger = logging.getLogger(__name__)
 
 MAX_SLACK_MESSAGE_LENGTH = 3000
 MAX_TABLE_ROWS = 20
+MAX_HISTORY_MESSAGES = 20
+
+thread_history: dict[str, list[dict[str, Any]]] = defaultdict(list)
 
 
 def format_sql_block(sql: str) -> str:
@@ -93,21 +97,44 @@ def extract_question(text: str, bot_user_id: str) -> str:
     return re.sub(pattern, "", text).strip()
 
 
-async def run_cortex_query(cortex_client: CortexClient, question: str, thread_id: str | None) -> QueryResult:
+def get_history(thread_ts: str) -> list[dict[str, Any]]:
+    return thread_history[thread_ts][-MAX_HISTORY_MESSAGES:]
+
+
+def store_exchange(thread_ts: str, question: str, answer: str) -> None:
+    thread_history[thread_ts].append(
+        {"role": "user", "content": [{"type": "text", "text": question}]}
+    )
+    thread_history[thread_ts].append(
+        {"role": "assistant", "content": [{"type": "text", "text": answer}]}
+    )
+
+
+async def run_cortex_query(
+    cortex_client: CortexClient,
+    question: str,
+    thread_id: str | None,
+    history: list[dict[str, Any]] | None = None,
+) -> QueryResult:
     try:
-        return await cortex_client.query(question, thread_id=thread_id)
+        return await cortex_client.query(question, thread_id=thread_id, history=history)
     except Exception as e:
         logger.exception("Error running Cortex query")
         return QueryResult(answer="", error=str(e))
 
 
-def run_query_sync(cortex_client: CortexClient, question: str, thread_id: str | None) -> QueryResult:
+def run_query_sync(
+    cortex_client: CortexClient,
+    question: str,
+    thread_id: str | None,
+    history: list[dict[str, Any]] | None = None,
+) -> QueryResult:
     try:
         result = asyncio.get_event_loop().run_until_complete(
-            run_cortex_query(cortex_client, question, thread_id)
+            run_cortex_query(cortex_client, question, thread_id, history)
         )
     except RuntimeError:
-        result = asyncio.run(run_cortex_query(cortex_client, question, thread_id))
+        result = asyncio.run(run_cortex_query(cortex_client, question, thread_id, history))
     return result
 
 
@@ -127,11 +154,13 @@ def register_handlers(app: App, cortex_client: CortexClient) -> None:
 
         say(text=":hourglass_flowing_sand: Analyzing your question...", thread_ts=thread_ts)
 
-        result = run_query_sync(cortex_client, question, thread_ts)
+        history = get_history(thread_ts)
+        result = run_query_sync(cortex_client, question, thread_ts, history)
         blocks = format_response(result)
         fallback_text = (result.answer or "No response from agent.") if result.success else f"Error: {result.error}"
 
         say(text=fallback_text, blocks=blocks, thread_ts=thread_ts)
+        store_exchange(thread_ts, question, result.answer or "No response from agent.")
         logger.info("Processed query from user %s: %s", user, question[:50])
 
     @app.event("message")
@@ -151,11 +180,13 @@ def register_handlers(app: App, cortex_client: CortexClient) -> None:
 
         say(text=":hourglass_flowing_sand: Analyzing your question...", thread_ts=thread_ts)
 
-        result = run_query_sync(cortex_client, text, thread_ts)
+        history = get_history(thread_ts)
+        result = run_query_sync(cortex_client, text, thread_ts, history)
         blocks = format_response(result)
         fallback_text = (result.answer or "No response from agent.") if result.success else f"Error: {result.error}"
 
         say(text=fallback_text, blocks=blocks, thread_ts=thread_ts)
+        store_exchange(thread_ts, text, result.answer or "No response from agent.")
 
     @app.event("app_home_opened")
     def handle_app_home(event: dict[str, Any], client: Any) -> None:
