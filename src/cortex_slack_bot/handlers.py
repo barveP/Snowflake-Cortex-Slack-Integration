@@ -1,4 +1,6 @@
 import asyncio
+import csv
+import io
 import logging
 import re
 from collections import defaultdict
@@ -11,48 +13,10 @@ from .snowflake_client import CortexClient, QueryResult
 
 logger = logging.getLogger(__name__)
 
-MAX_SLACK_MESSAGE_LENGTH = 3000
-MAX_TABLE_ROWS = 20
+MAX_BLOCK_TEXT_LENGTH = 2900
 MAX_HISTORY_MESSAGES = 20
 
 thread_history: dict[str, list[dict[str, Any]]] = defaultdict(list)
-
-
-def format_sql_block(sql: str) -> str:
-    return f"```sql\n{sql}\n```"
-
-
-def format_data_table(data: list[dict[str, Any]], max_rows: int = MAX_TABLE_ROWS) -> str:
-    if not data:
-        return "_No data returned_"
-
-    columns = list(data[0].keys())
-    display_data = data[:max_rows]
-
-    widths = {col: len(str(col)) for col in columns}
-    for row in display_data:
-        for col in columns:
-            widths[col] = max(widths[col], len(str(row.get(col, ""))))
-
-    max_col_width = 25
-    widths = {col: min(w, max_col_width) for col, w in widths.items()}
-
-    header = " | ".join(str(col).ljust(widths[col])[:widths[col]] for col in columns)
-    separator = "-+-".join("-" * widths[col] for col in columns)
-
-    rows: list[str] = []
-    for row in display_data:
-        formatted_row = " | ".join(
-            str(row.get(col, "")).ljust(widths[col])[:widths[col]] for col in columns
-        )
-        rows.append(formatted_row)
-
-    table = f"```\n{header}\n{separator}\n" + "\n".join(rows) + "\n```"
-
-    if len(data) > max_rows:
-        table += f"\n_Showing {max_rows} of {len(data)} rows_"
-
-    return table
 
 
 def format_response(result: QueryResult) -> list[dict[str, Any]]:
@@ -67,29 +31,61 @@ def format_response(result: QueryResult) -> list[dict[str, Any]]:
 
     if result.answer:
         answer_text = result.answer
-        if len(answer_text) > MAX_SLACK_MESSAGE_LENGTH:
-            answer_text = answer_text[:MAX_SLACK_MESSAGE_LENGTH] + "..."
-
+        if len(answer_text) > MAX_BLOCK_TEXT_LENGTH:
+            answer_text = answer_text[:MAX_BLOCK_TEXT_LENGTH] + "..."
         blocks.append({
             "type": "section",
             "text": {"type": "mrkdwn", "text": answer_text},
         })
 
+    file_notes: list[str] = []
     if result.sql:
-        blocks.append({"type": "divider"})
-        blocks.append({
-            "type": "section",
-            "text": {"type": "mrkdwn", "text": f":mag: *Generated SQL*\n{format_sql_block(result.sql)}"},
-        })
-
+        file_notes.append(":mag: SQL query attached")
     if result.data:
+        file_notes.append(f":bar_chart: Results attached ({len(result.data)} rows)")
+    if file_notes:
         blocks.append({"type": "divider"})
         blocks.append({
-            "type": "section",
-            "text": {"type": "mrkdwn", "text": f":bar_chart: *Results*\n{format_data_table(result.data)}"},
+            "type": "context",
+            "elements": [{"type": "mrkdwn", "text": " | ".join(file_notes)}],
         })
 
     return blocks
+
+
+def upload_files(client: Any, channel: str, thread_ts: str, result: QueryResult) -> None:
+    if not result.sql and not result.data:
+        return
+
+    uploads: list[dict[str, Any]] = []
+
+    if result.sql:
+        uploads.append({
+            "content": result.sql,
+            "filename": "query.sql",
+            "title": "Generated SQL",
+        })
+
+    if result.data:
+        buf = io.StringIO()
+        columns = list(result.data[0].keys())
+        writer = csv.DictWriter(buf, fieldnames=columns)
+        writer.writeheader()
+        writer.writerows(result.data)
+        uploads.append({
+            "content": buf.getvalue(),
+            "filename": "results.csv",
+            "title": "Query Results",
+        })
+
+    try:
+        client.files_upload_v2(
+            file_uploads=uploads,
+            channel=channel,
+            thread_ts=thread_ts,
+        )
+    except Exception as e:
+        logger.exception("Failed to upload files: %s", e)
 
 
 def extract_question(text: str, bot_user_id: str) -> str:
@@ -141,9 +137,10 @@ def run_query_sync(
 def register_handlers(app: App, cortex_client: CortexClient) -> None:
 
     @app.event("app_mention")
-    def handle_mention(event: dict[str, Any], say: Say, context: dict[str, Any]) -> None:
+    def handle_mention(event: dict[str, Any], say: Say, context: dict[str, Any], client: Any) -> None:
         user = event.get("user", "")
         text = event.get("text", "")
+        channel = event.get("channel", "")
         thread_ts = event.get("thread_ts") or event.get("ts")
         bot_user_id = context.get("bot_user_id", "")
 
@@ -160,11 +157,12 @@ def register_handlers(app: App, cortex_client: CortexClient) -> None:
         fallback_text = (result.answer or "No response from agent.") if result.success else f"Error: {result.error}"
 
         say(text=fallback_text, blocks=blocks, thread_ts=thread_ts)
+        upload_files(client, channel, thread_ts, result)
         store_exchange(thread_ts, question, result.answer or "No response from agent.")
         logger.info("Processed query from user %s: %s", user, question[:50])
 
     @app.event("message")
-    def handle_message(event: dict[str, Any], say: Say, context: dict[str, Any]) -> None:
+    def handle_message(event: dict[str, Any], say: Say, context: dict[str, Any], client: Any) -> None:
         channel_type = event.get("channel_type", "")
         if channel_type != "im":
             return
@@ -173,6 +171,7 @@ def register_handlers(app: App, cortex_client: CortexClient) -> None:
             return
 
         text = event.get("text", "")
+        channel = event.get("channel", "")
         thread_ts = event.get("thread_ts") or event.get("ts")
 
         if not text.strip():
@@ -186,6 +185,7 @@ def register_handlers(app: App, cortex_client: CortexClient) -> None:
         fallback_text = (result.answer or "No response from agent.") if result.success else f"Error: {result.error}"
 
         say(text=fallback_text, blocks=blocks, thread_ts=thread_ts)
+        upload_files(client, channel, thread_ts, result)
         store_exchange(thread_ts, text, result.answer or "No response from agent.")
 
     @app.event("app_home_opened")

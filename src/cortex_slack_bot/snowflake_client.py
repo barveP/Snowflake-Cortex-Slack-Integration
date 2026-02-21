@@ -89,7 +89,7 @@ class CortexClient:
                 "Authorization": f"Bearer {token}",
             }
 
-            async with httpx.AsyncClient(timeout=60.0) as client:
+            async with httpx.AsyncClient(timeout=300.0) as client:
                 response = await client.post(
                     self._build_agent_url(),
                     headers=headers,
